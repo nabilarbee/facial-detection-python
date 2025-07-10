@@ -1,8 +1,40 @@
+from flask import Flask, render_template, request
 import os
 import argparse
 import cv2
 import mediapipe as mp
 import sys
+
+app = Flask(__name__)
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+
+    if request.method == 'POST':
+        mode = request.form.get('mode')
+        file_path = request.form.get('filePath')
+        record = request.form.get('record') == 'on'
+
+        output_dir = './output'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created output directory: {output_dir}")
+
+        # Initialize MediaPipe Face Detection
+        mp_face_detection = mp.solutions.face_detection
+        with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
+            if mode == "image":
+                if not file_path:
+                    return "Error: --filePath is required for 'image' mode.", 400
+                process_image_file(face_detection, file_path, output_dir)
+            elif mode == 'video':
+                if not file_path:
+                    return "Error: --filePath is required for 'video' mode.", 400
+                process_video_file(face_detection, file_path, output_dir)
+            elif mode == 'webcam':
+                process_webcam(face_detection, output_dir, record)
+
+    return render_template('index.html')
 
 def process_and_blur_faces(img, face_detection, blur_kernel_size=(75, 75)):
     """
@@ -163,4 +195,4 @@ def main():
             process_webcam(face_detection, output_dir, args.record)
 
 if __name__ == '__main__':
-    main()
+    app.run(debug=True)

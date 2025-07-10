@@ -1,0 +1,126 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Blur Tool</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <style>
+        body { background-color: #f8f9fa; }
+        .container { max-width: 960px; }
+        .video-container { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+        video, img { border: 1px solid #dee2e6; border-radius: .25rem; background-color: #000; }
+    </style>
+</head>
+<body class="py-5">
+    <div class="container text-center">
+        <h1 class="display-4 mb-4">Face Blur Tool</h1>
+
+        <!-- Tab Navigation -->
+        <ul class="nav nav-tabs justify-content-center mb-4" id="myTab" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="webcam-tab" data-bs-toggle="tab" data-bs-target="#webcam" type="button" role="tab">Live Webcam</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="file-tab" data-bs-toggle="tab" data-bs-target="#file" type="button" role="tab">Process File</button>
+            </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content" id="myTabContent">
+            <!-- Webcam Tab -->
+            <div class="tab-pane fade show active" id="webcam" role="tabpanel">
+                <div class="mb-3">
+                    <button id="startStopBtn" class="btn btn-primary">Start Webcam</button>
+                </div>
+                <div class="video-container">
+                    <div>
+                        <h5>Your Webcam</h5>
+                        <video id="video" width="480" height="360" autoplay muted></video>
+                    </div>
+                    <div>
+                        <h5>Processed Stream</h5>
+                        <img id="processed_image" width="480" height="360" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
+                    </div>
+                </div>
+            </div>
+
+            <!-- File Processing Tab -->
+            <div class="tab-pane fade" id="file" role="tabpanel">
+                <p class="lead">Upload an image or video to automatically blur any detected faces.</p>
+                <form method="POST" enctype="multipart/form-data" class="w-50 mx-auto">
+                    <div class="mb-3">
+                        <input type="file" class="form-control" name="file" required>
+                    </div>
+                    <button type="submit" class="btn btn-success">Process and Download</button>
+                </form>
+                {% if processed_file %}
+                <div class="alert alert-success mt-4">
+                    <h4 class="alert-heading">Processing Complete!</h4>
+                    <p>Your file is ready for download.</p>
+                    <hr>
+                    <a href="{{ url_for('download_file', filename=processed_file) }}" class="btn btn-primary">
+                        Download {{ processed_file }}
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const video = document.getElementById('video');
+        const startStopBtn = document.getElementById('startStopBtn');
+        const socket = io.connect('http://' + document.domain + ':' + location.port);
+        let stream;
+        let isStreaming = false;
+        let animationFrameId;
+
+        socket.on('connect', () => console.log("Socket connected"));
+
+        function sendFrame() {
+            if (!isStreaming || video.paused || video.ended) return;
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            socket.emit('image', canvas.toDataURL('image/jpeg'));
+            animationFrameId = requestAnimationFrame(sendFrame);
+        }
+
+        startStopBtn.addEventListener('click', () => {
+            if (!isStreaming) {
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    navigator.mediaDevices.getUserMedia({ video: true })
+                        .then(s => {
+                            stream = s;
+                            video.srcObject = stream;
+                            video.play();
+                            isStreaming = true;
+                            startStopBtn.textContent = 'Stop Webcam';
+                            startStopBtn.classList.replace('btn-primary', 'btn-danger');
+                            requestAnimationFrame(sendFrame);
+                        }).catch(err => console.error("Error accessing camera:", err));
+                }
+            } else {
+                isStreaming = false;
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                video.srcObject = null;
+                cancelAnimationFrame(animationFrameId);
+                startStopBtn.textContent = 'Start Webcam';
+                startStopBtn.classList.replace('btn-danger', 'btn-primary');
+            }
+        });
+
+        socket.on('response_back', data => {
+            document.getElementById('processed_image').src = data;
+        });
+    </script>
+</body>
+</html>
