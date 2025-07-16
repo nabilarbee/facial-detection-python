@@ -6,10 +6,16 @@ Python Flask & SocketIO Based Application. Blurs your webcam realtime, and able 
 
 Uses SocketIO to listen and send live webcam frame data to the python file.\
 Uses Flask to listen to the file uploads, retrieving uploaded files, and uploading the processed files for the user to download.
-## Built With
+## Installation
+
+Clone The Project
+
+```bash
+  git clone https://github.com/nabilarbee/facial-detection-python.git
+```
 
 This project was made possible by the following open-source technologies.
-
+Make sure you install the correct versions of each component.
 ### Core Components
 | Component | Version |
 | :--- | :--- |
