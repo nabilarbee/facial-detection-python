@@ -1,53 +1,36 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, send_from_directory, url_for, redirect
+from flask_socketio import SocketIO, emit
 import os
-import argparse
 import cv2
 import mediapipe as mp
-import sys
+import numpy as np
+import base64
+import time
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+socketio = SocketIO(app)
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
+# config outputs and allowed file extensions
+UPLOAD_FOLDER = 'uploads'
+OUTPUT_FOLDER = 'output'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'mov', 'avi'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    if request.method == 'POST':
-        mode = request.form.get('mode')
-        file_path = request.form.get('filePath')
-        record = request.form.get('record') == 'on'
+# Initialise once so it doesnt have to reload the model everytime a request is made
+mp_face_detection = mp.solutions.face_detection
+face_detection = mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
 
-        output_dir = './output'
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            print(f"Created output directory: {output_dir}")
+# function to check if the file has correct extensions
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-        # Initialize MediaPipe Face Detection
-        mp_face_detection = mp.solutions.face_detection
-        with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
-            if mode == "image":
-                if not file_path:
-                    return "Error: --filePath is required for 'image' mode.", 400
-                process_image_file(face_detection, file_path, output_dir)
-            elif mode == 'video':
-                if not file_path:
-                    return "Error: --filePath is required for 'video' mode.", 400
-                process_video_file(face_detection, file_path, output_dir)
-            elif mode == 'webcam':
-                process_webcam(face_detection, output_dir, record)
-
-    return render_template('index.html')
-
-def process_and_blur_faces(img, face_detection, blur_kernel_size=(75, 75)):
-    """
-    Detects faces in an image and applies a blur effect to them.
-
-    Args:
-        img: The input image (NumPy array).
-        face_detection: The MediaPipe face detection model instance.
-        blur_kernel_size: A tuple specifying the width and height of the blur kernel.
-
-    Returns:
-        The image with detected faces blurred.
-    """
+# main function to process and blur faces in image
+# reference from youtube https://www.youtube.com/watch?v=DRMBqhrfxXg
+def process_and_blur_faces(img, blur_kernel_size=(75, 75)):
     H, W, _ = img.shape
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     out = face_detection.process(img_rgb)
@@ -56,143 +39,92 @@ def process_and_blur_faces(img, face_detection, blur_kernel_size=(75, 75)):
         for detection in out.detections:
             location_data = detection.location_data
             bbox = location_data.relative_bounding_box
-
-            x1 = int(bbox.xmin * W)
-            y1 = int(bbox.ymin * H)
-            w = int(bbox.width * W)
-            h = int(bbox.height * H)
-
-            # Ensure the bounding box is within the image dimensions
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(W, x1 + w), min(H, y1 + h)
-
-            # Apply blur to the face region
-            if x1 < x2 and y1 < y2:
-                img[y1:y2, x1:x2, :] = cv2.blur(img[y1:y2, x1:x2, :], blur_kernel_size)
-    
+            x1, y1 = int(bbox.xmin * W), int(bbox.ymin * H)
+            w, h = int(bbox.width * W), int(bbox.height * H)
+            img[y1:y1+h, x1:x1+w, :] = cv2.GaussianBlur(img[y1:y1+h, x1:x1+w, :], blur_kernel_size, 0)
     return img
 
-def process_image_file(face_detection, input_path, output_dir):
-    """
-    Loads an image, processes it to blur faces, and saves the result.
-    """
-    if not os.path.exists(input_path):
-        print(f"Error: Input file not found at {input_path}")
-        return
+# routes for file processing buttons
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        # checking if it's a file upload
+        if 'file' not in request.files:
+            return redirect(request.url)
+        
+        file = request.files['file']
+        # if no file selected or file not allowed
+        if file.filename == '' or not allowed_file(file.filename):
+            return redirect(request.url)
 
-    img = cv2.imread(input_path)
-    if img is None:
-        print(f"Error: Could not read image from {input_path}")
-        return
+        # creating unique file name
+        original_filename = secure_filename(file.filename)
+        unique_filename = f"{int(time.time())}_{original_filename}"
+        input_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(input_path)
 
-    processed_img = process_and_blur_faces(img, face_detection)
-    
-    output_path = os.path.join(output_dir, 'output.png')
-    cv2.imwrite(output_path, processed_img)
-    print(f"Processed image saved to {output_path}")
+        output_filename = f"processed_{unique_filename}"
+        output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+        
+        # Checking file extension for either image or video
+        file_ext = original_filename.rsplit('.', 1)[1].lower()
+        if file_ext in ['png', 'jpg', 'jpeg']:
+            img = cv2.imread(input_path)
+            processed_img = process_and_blur_faces(img)
+            cv2.imwrite(output_path, processed_img)
+        elif file_ext in ['mp4', 'mov', 'avi']:
+            process_video_file(input_path, output_path)
+        
+        return render_template('index.html', processed_file=output_filename)
 
-def process_video_file(face_detection, input_path, output_dir):
-    """
-    Processes a video file to blur faces in each frame and saves the result.
-    """
-    if not os.path.exists(input_path):
-        print(f"Error: Input file not found at {input_path}")
-        return
+    return render_template('index.html', processed_file=None)
 
+@app.route('/outputs/<filename>')
+def download_file(filename):
+    return send_from_directory(app.config["OUTPUT_FOLDER"], filename, as_attachment=True)
+
+# function to build on previous one so that it can process videos
+def process_video_file(input_path, output_path):
     cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened():
-        print(f"Error: Could not open video file {input_path}")
-        return
-
     ret, frame = cap.read()
     if not ret:
-        print("Error: Could not read the first frame of the video.")
         cap.release()
         return
-        
+    
     frame_height, frame_width, _ = frame.shape
-    output_path = os.path.join(output_dir, 'output.mp4')
-    output_video = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'MP4V'), 25, (frame_width, frame_height))
+    output_video = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), 25, (frame_width, frame_height))
 
+    # while there are still frames to be processed
     while ret:
-        frame = process_and_blur_faces(frame, face_detection)
+        # current frame goes to the function built earlier to process
+        frame = process_and_blur_faces(frame)
+        # video writes the frame
         output_video.write(frame)
         ret, frame = cap.read()
 
     cap.release()
     output_video.release()
-    print(f"Processed video saved to {output_path}")
 
-def process_webcam(face_detection, output_dir, record=False):
-    """
-    Captures video from the webcam, blurs faces in real-time, and optionally records the output.
-    """
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        return
+# Socketio route for webcam
+@socketio.on('image')
+def image(data_image):
+    # decode image from base64
+    sbuf = base64.b64decode(data_image.split(",")[1])
+    npimg = np.frombuffer(sbuf, dtype=np.uint8)
+    frame = cv2.imdecode(npimg, 1)
 
-    output_video = None
-    if record:
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        output_path = os.path.join(output_dir, 'output_webcam.mp4')
-        output_video = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'MP4V'), 25, (frame_width, frame_height))
-        print(f"Recording webcam feed to {output_path}")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Failed to capture frame from webcam.")
-            break
-
-        frame = process_and_blur_faces(frame, face_detection)
-        frame = cv2.flip(frame, 1)
-
-        if record and output_video:
-            output_video.write(frame)
-
-        cv2.imshow('Webcam Face Blur', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    if output_video:
-        output_video.release()
-    cv2.destroyAllWindows()
-
-def main():
-    """
-    Main function to parse arguments and run the face blurring application.
-    """
-    parser = argparse.ArgumentParser(description="Blur faces in images, videos, or webcam streams.")
-    parser.add_argument("--mode", default='webcam', choices=['image', 'video', 'webcam'], 
-                        help="The processing mode: 'image', 'video', or 'webcam'.")
-    parser.add_argument("--filePath", default=None, 
-                        help="Path to the input image or video file (required for 'image' and 'video' modes).")
-    parser.add_argument("--record", action='store_true', 
-                        help="Enable recording when using 'webcam' mode.")
+    # process frame to blur face
+    frame = process_and_blur_faces(frame)
     
-    args = parser.parse_args()
-
-    output_dir = './output'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"Created output directory: {output_dir}")
-
-    # Initialize MediaPipe Face Detection
-    mp_face_detection = mp.solutions.face_detection
-    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
-        if args.mode == "image":
-            if not args.filePath:
-                sys.exit("Error: --filePath is required for 'image' mode.")
-            process_image_file(face_detection, args.filePath, output_dir)
-        elif args.mode == 'video':
-            if not args.filePath:
-                sys.exit("Error: --filePath is required for 'video' mode.")
-            process_video_file(face_detection, args.filePath, output_dir)
-        elif args.mode == 'webcam':
-            process_webcam(face_detection, output_dir, args.record)
+    # flip webcam
+    frame = cv2.flip(frame, 1)
+    
+    # change back to jpg file and base64
+    _, buffer = cv2.imencode('.jpg', frame)
+    frame_data = base64.b64encode(buffer).decode('utf-8')
+    
+    # send frame to html
+    emit('response_back', 'data:image/jpeg;base64,' + frame_data)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    socketio.run(app, debug=True)
