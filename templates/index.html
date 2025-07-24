@@ -9,15 +9,51 @@
     <style>
         .container { max-width: 960px; }
         .video-container { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
-        video, img { border: 8px solid #29e276; background-color: #000; }
+        .webcam { border: 6px solid #29e276; background-color: #000; }
+        .webcam-processed { border: 6px solid #c925d8; background-color: #000; }
+        .fp-preview { border: 6px solid #1c68f5; background-color: #000; }
         /* Flip the webcam vid, no need to worry about the
         proccessed output since the output vid already flipped through the python code*/
         #video {
             transform: scaleX(-1);
         }
     </style>
+    <script src="https://code.jquery.com/jquery-3.4.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    $(document).ready(function(){
+        $("#myModal").modal('show');
+    });
+    </script>
 </head>
 <body class="py-5">
+
+    <div id="myModal" class="modal fade" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Select the Blur Intensity</h5>
+                </div>
+                <div class="modal-body">
+                    <form action="">
+                        <h5>Blur Intensity Preview</h5>
+                        <img class="fp-preview" id="processed_image_preview" width="480" height="360" src="{{ initial_preview_src | default('', true) }}" />
+                        <br><br>
+                        <p><em>(Jake Gyllenhaal, photo by Momodu Mansaray), found on <a href="https://www.broadway.com/buzz/stars/jake-gyllenhaal/profile/">this site</a>.</em></p>
+                        <br>
+                        <div class="w-100">
+                            <label for="blur_intensity" class="form-label">Intensity: <span id="intensity_value">50</span></label>
+                            <input type="range" class="form-range" id="blur_intensity" name="blur_intensity" min="0" max="99" value="50">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" id="confirmBlurBtn" class="btn btn-primary">Confirm Intensity</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="container text-center">
         <h1 class="display-4 mb-4">Face Blur Tool</h1>
 
@@ -39,28 +75,42 @@
                     <!-- button with startStopBtn ID to send signal to app.py -->
                     <button id="startStopBtn" class="btn btn-primary">Start Webcam</button>
                 </div>
+                <!-- buttons to start/stop record -->
+                 <div id="recordingControls" class="mb-3" style="display: none;">
+                    <button id="startRecordingBtn" class="btn btn-success">Start Recording</button>
+                    <button id="stopRecordingBtn" class="btn btn-danger" style="display: none;">Stop Recording</button>
+                </div>
+                <div id="recordingDownloadLinkContainer" class="mt-3"></div>
+
                 <div class="video-container">
                     <div>
-                        <h5>Your Webcam</h5>
-                        <video id="video" width="480" height="360" autoplay muted></video>
+                        <h5>Raw Webcam</h5>
+                        <video class="webcam" id="video" width="480" height="360" autoplay muted></video>
                     </div>
                     <div>
-                        <h5>Processed Video</h5>
-                        <img id="processed_image" width="480" height="360" src="" />
+                        <h5>Blurred Face Stream</h5>
+                        <img class="webcam-processed" id="processed_image" width="480" height="360" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
                     </div>
+                    {% if filename_to_emit %}
+                    <div>
+                        <h5>test</h5>
+                    </div>
+                    {% endif %}
+
                 </div>
             </div>
 
-            <!-- Second Tab (File Processing) -->
+            <!-- second Tab (File Processing) -->
             <div class="tab-pane fade" id="file" role="tabpanel">
                 <p class="lead">Upload an image or video</p>
                 <form method="POST" enctype="multipart/form-data" class="w-50 mx-auto">
                     <div class="mb-3">
                         <input type="file" class="form-control" name="file" required>
                     </div>
+                    <input type="hidden" name="blur_intensity" id="blur_intensity_hidden" value="50">
                     <button type="submit" class="btn btn-success">Process and Download</button>
                 </form>
-                <!-- Show the download button if EXISTS processed_file -->
+                <!-- show the download button if EXISTS processed_file -->
                 {% if processed_file %}
                 <div class="alert alert-success mt-4">
                     <h4 class="alert-heading">Done!</h4>
@@ -76,7 +126,6 @@
     </div>
 
     <!-- bootstrap js to enable clicking between panels -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const video = document.getElementById('video');
         const startStopBtn = document.getElementById('startStopBtn');
@@ -85,11 +134,24 @@
         let isStreaming = false;
         let animationFrameId;
 
+        const recordingControls = document.getElementById('recordingControls');
+        const startRecordingBtn = document.getElementById('startRecordingBtn');
+        const stopRecordingBtn = document.getElementById('stopRecordingBtn');
+        const downloadContainer = document.getElementById('recordingDownloadLinkContainer');
+
         socket.on('connect', () => console.log("Socket connected"));
 
         // function to send each frame of the webcam to the server
         function sendFrame() {
             if (!isStreaming || video.paused || video.ended) return;
+
+            // check if the video has valid dimensions
+            // prevents sending empty/invalid frames
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                animationFrameId = requestAnimationFrame(sendFrame);
+                return;
+            }
+
             const canvas = document.createElement('canvas');
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -99,7 +161,7 @@
             animationFrameId = requestAnimationFrame(sendFrame);
         }
 
-        // Listening to the startStopBtn from HTML if it's clicked or not
+        //  listen to startStopBtn click
         startStopBtn.addEventListener('click', () => {
             // isStreaming is initially set to FALSE, so we confirm if the webcam is not streaming first
             if (!isStreaming) {
@@ -110,14 +172,18 @@
                             video.srcObject = stream;
                             video.play();
                             isStreaming = true;
-                            // Change button text
+                            // change button text
                             startStopBtn.textContent = 'Stop Webcam';
                             startStopBtn.classList.replace('btn-primary', 'btn-danger');
+
+                            // show recording controls
+                            recordingControls.style.display = 'block'; 
+
                             requestAnimationFrame(sendFrame);
                         }).catch(err => console.error("Error accessing camera:", err));
                 }
             } else {
-                // If the webcam isStreaming is TRUE, then we do the opposite
+                // if the webcam isStreaming is TRUE, then we do the opposite
                 isStreaming = false;
                 if (stream) {
                     stream.getTracks().forEach(track => track.stop());
@@ -126,12 +192,82 @@
                 cancelAnimationFrame(animationFrameId);
                 startStopBtn.textContent = 'Start Webcam';
                 startStopBtn.classList.replace('btn-danger', 'btn-primary');
+
+                // stop emit and also hide record controls
+                recordingControls.style.display = 'none';
+                socket.emit('toggle_recording', { 'recording': false });
+                stopRecordingBtn.style.display = 'none';
+                startRecordingBtn.style.display = 'inline-block';
+
             }
         });
 
         socket.on('response_back', data => {
             document.getElementById('processed_image').src = data;
         });
+
+        // handle recording controls
+        startRecordingBtn.addEventListener('click', () => {
+            socket.emit('toggle_recording', { 'recording': true });
+            startRecordingBtn.style.display = 'none';
+            stopRecordingBtn.style.display = 'inline-block';
+            downloadContainer.innerHTML = '';
+        });
+
+        stopRecordingBtn.addEventListener('click', () => {
+            socket.emit('toggle_recording', { 'recording': false });
+            stopRecordingBtn.style.display = 'none';
+            startRecordingBtn.style.display = 'inline-block';
+        });
+
+        // handle recording complete event with download link
+        socket.on('recording_complete', (data) => {
+            const filename = data.filename;
+            const downloadLink = document.createElement('a');
+            downloadLink.href = `/outputs/${filename}`;
+            downloadLink.textContent = `Download Recording: ${filename}`;
+            downloadLink.className = 'btn btn-info';
+
+            // wait a second for download to initialise then reload
+            downloadLink.addEventListener('click', () => {
+                setTimeout(() => {window.location.reload();}, 1500);
+            });
+
+            downloadContainer.innerHTML = '';
+            downloadContainer.appendChild(downloadLink);
+        });
+    </script>
+    <script>
+    const blurSlider = document.getElementById('blur_intensity');
+    const intensityValueSpan = document.getElementById('intensity_value');
+
+    blurSlider.addEventListener('input', function() {
+        const value = this.value;
+        if (intensityValueSpan) {
+            intensityValueSpan.textContent = value;
+        }
+        // ask socket for new image
+        socket.emit('get_preview', { 'intensity': value });
+    });
+
+    // get socket response with updated preview image
+    socket.on('preview_updated', function(data) {
+        document.getElementById('processed_image_preview').src = data.src;
+    });
+
+    // connect confirm button to hidden input
+    document.getElementById('confirmBlurBtn').addEventListener('click', function() {
+        // get value from slider
+        console.log("Confirm button clicked");
+        const modalSliderValue = document.getElementById('blur_intensity').value;
+        // set value of hidden input in form and the socket emit udpdate blur intensity webcam
+        document.getElementById('blur_intensity_hidden').value = modalSliderValue;
+        socket.emit('update_blur', { 'intensity': modalSliderValue });
+        console.log("Blur intensity set to:", modalSliderValue);
+        // close modal
+        var myModal = bootstrap.Modal.getInstance(document.getElementById('myModal'));
+        myModal.hide();
+    });
     </script>
 </body>
 </html>
